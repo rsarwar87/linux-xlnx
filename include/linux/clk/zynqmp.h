@@ -19,6 +19,8 @@
 #include <linux/spinlock.h>
 #include <linux/soc/xilinx/zynqmp/pm.h>
 
+#define CLK_FRAC	BIT(13) /* has a fractional parent */
+
 struct device;
 
 static inline u32 zynqmp_pm_mmio_readl(void __iomem *reg)
@@ -28,18 +30,14 @@ static inline u32 zynqmp_pm_mmio_readl(void __iomem *reg)
 
 	ret = zynqmp_pm_mmio_read((u32)(ulong)reg, &val);
 	if (ret)
-		pr_err("Read failed\n");
+		pr_err("Read failed address: %x\n", (u32)(ulong)reg);
 	return val;
 }
 
 static inline int zynqmp_pm_mmio_writel(u32 val, void __iomem *reg)
 {
-	int ret;
 
-	ret = zynqmp_pm_mmio_write((u32)(ulong)reg, 0xffffffff, val);
-	if (ret)
-		pr_err("Write failed\n");
-	return ret;
+	return zynqmp_pm_mmio_write((u32)(ulong)reg, 0xffffffff, val);
 }
 
 struct clk *clk_register_zynqmp_pll(const char *name, const char *parent,
