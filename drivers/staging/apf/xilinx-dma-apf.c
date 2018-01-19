@@ -344,10 +344,6 @@ static irqreturn_t xdma_tx_intr_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static void xdma_chan_remove(struct xdma_chan *chan)
-{
-}
-
 static void xdma_start_transfer(struct xdma_chan *chan,
 				int start_index,
 				int end_index)
@@ -1056,6 +1052,7 @@ static int xdma_probe(struct platform_device *pdev)
 
 	/* Set this as configurable once HPC works */
 	arch_setup_dma_ops(&pdev->dev, 0, 0, NULL, false);
+	dma_set_mask(&pdev->dev, 0xFFFFFFFFFFFFFFFFull);
 
 	dma_config = (struct xdma_device_config *)xdev->dev->platform_data;
 	if (dma_config->channel_count < 1 || dma_config->channel_count > 2)
@@ -1146,9 +1143,9 @@ static int xdma_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "unable to allocate BD's\n");
 			return -ENOMEM;
 		}
-		pr_info("  chan%d bd ring @ 0x%08x (size: 0x%08x bytes)\n",
+		pr_info("  chan%d bd ring @ 0x%p (size: 0x%x bytes)\n",
 			chan->id,
-			chan->bd_phys_addr,
+			(void *)chan->bd_phys_addr,
 			chan->bd_chain_size);
 
 		err = dma_init(xdev->chan[chan->id]);
@@ -1184,7 +1181,7 @@ static int xdma_remove(struct platform_device *pdev)
 
 	for (i = 0; i < XDMA_MAX_CHANS_PER_DEVICE; i++) {
 		if (xdev->chan[i])
-			xdma_chan_remove(xdev->chan[i]);
+			xdma_free_chan_resources(xdev->chan[i]);
 	}
 
 	return 0;
