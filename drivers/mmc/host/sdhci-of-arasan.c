@@ -28,12 +28,13 @@
 #include <linux/phy/phy.h>
 #include <linux/mmc/mmc.h>
 #include <linux/soc/xilinx/zynqmp/tap_delays.h>
+#include <linux/soc/xilinx/zynqmp/fw.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
 #include "sdhci-pltfm.h"
 #include <linux/of.h>
+#include <linux/slab.h>
 
-#define SDHCI_ARASAN_CLK_CTRL_OFFSET	0x2c
 #define SDHCI_ARASAN_VENDOR_REGISTER	0x78
 
 #define VENDOR_ENHANCED_STROBE		BIT(0)
@@ -171,21 +172,6 @@ static int sdhci_arasan_syscon_write(struct sdhci_host *host,
 			 mmc_hostname(host->mmc), ret);
 
 	return ret;
-}
-
-static unsigned int sdhci_arasan_get_timeout_clock(struct sdhci_host *host)
-{
-	u32 div;
-	unsigned long freq;
-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
-
-	div = readl(host->ioaddr + SDHCI_ARASAN_CLK_CTRL_OFFSET);
-	div = (div & CLK_CTRL_TIMEOUT_MASK) >> CLK_CTRL_TIMEOUT_SHIFT;
-
-	freq = clk_get_rate(pltfm_host->clk);
-	freq /= 1 << (CLK_CTRL_TIMEOUT_MIN_EXP + div);
-
-	return freq;
 }
 
 static void arasan_zynqmp_dll_reset(struct sdhci_host *host, u8 deviceid)
@@ -397,9 +383,7 @@ static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 			 * through low speeds without power cycling.
 			 */
 			sdhci_set_clock(host, host->max_clk);
-			spin_unlock_irq(&host->lock);
 			phy_power_on(sdhci_arasan->phy);
-			spin_lock_irq(&host->lock);
 			sdhci_arasan->is_phy_on = true;
 
 			/*
@@ -429,18 +413,14 @@ static void sdhci_arasan_set_clock(struct sdhci_host *host, unsigned int clock)
 	}
 
 	if (ctrl_phy && sdhci_arasan->is_phy_on) {
-		spin_unlock_irq(&host->lock);
 		phy_power_off(sdhci_arasan->phy);
-		spin_lock_irq(&host->lock);
 		sdhci_arasan->is_phy_on = false;
 	}
 
 	sdhci_set_clock(host, clock);
 
 	if (ctrl_phy) {
-		spin_unlock_irq(&host->lock);
 		phy_power_on(sdhci_arasan->phy);
-		spin_lock_irq(&host->lock);
 		sdhci_arasan->is_phy_on = true;
 	}
 }
@@ -451,13 +431,13 @@ static void sdhci_arasan_hs400_enhanced_strobe(struct mmc_host *mmc,
 	u32 vendor;
 	struct sdhci_host *host = mmc_priv(mmc);
 
-	vendor = readl(host->ioaddr + SDHCI_ARASAN_VENDOR_REGISTER);
+	vendor = sdhci_readl(host, SDHCI_ARASAN_VENDOR_REGISTER);
 	if (ios->enhanced_strobe)
 		vendor |= VENDOR_ENHANCED_STROBE;
 	else
 		vendor &= ~VENDOR_ENHANCED_STROBE;
 
-	writel(vendor, host->ioaddr + SDHCI_ARASAN_VENDOR_REGISTER);
+	sdhci_writel(host, vendor, SDHCI_ARASAN_VENDOR_REGISTER);
 }
 
 static void sdhci_arasan_reset(struct sdhci_host *host, u8 mask)
@@ -500,18 +480,86 @@ static int sdhci_arasan_voltage_switch(struct mmc_host *mmc,
 static struct sdhci_ops sdhci_arasan_ops = {
 	.set_clock = sdhci_arasan_set_clock,
 	.get_max_clock = sdhci_pltfm_clk_get_max_clock,
-	.get_timeout_clock = sdhci_arasan_get_timeout_clock,
+	.get_timeout_clock = sdhci_pltfm_clk_get_max_clock,
 	.set_bus_width = sdhci_set_bus_width,
 	.reset = sdhci_arasan_reset,
 	.set_uhs_signaling = sdhci_set_uhs_signaling,
 };
 
-static struct sdhci_pltfm_data sdhci_arasan_pdata = {
+static const struct sdhci_pltfm_data sdhci_arasan_pdata = {
 	.ops = &sdhci_arasan_ops,
-	.quirks = SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
 			SDHCI_QUIRK2_CLOCK_DIV_ZERO_BROKEN,
 };
+
+#ifdef CONFIG_PM
+/**
+ * sdhci_arasan_runtime_suspend - Suspend method for the driver
+ * @dev:	Address of the device structure
+ * Put the device in a low power state.
+ *
+ * Return: 0 on success and error value on error
+ */
+static int sdhci_arasan_runtime_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	int ret;
+
+	ret = sdhci_runtime_suspend_host(host);
+	if (ret)
+		return ret;
+
+	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
+		mmc_retune_needed(host->mmc);
+
+	clk_disable(pltfm_host->clk);
+	clk_disable(sdhci_arasan->clk_ahb);
+
+	return 0;
+}
+
+/**
+ * sdhci_arasan_runtime_resume - Resume method for the driver
+ * @dev:	Address of the device structure
+ * Resume operation after suspend
+ *
+ * Return: 0 on success and error value on error
+ */
+static int sdhci_arasan_runtime_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct sdhci_host *host = platform_get_drvdata(pdev);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
+	int ret;
+
+	ret = clk_enable(sdhci_arasan->clk_ahb);
+	if (ret) {
+		dev_err(dev, "Cannot enable AHB clock.\n");
+		return ret;
+	}
+
+	ret = clk_enable(pltfm_host->clk);
+	if (ret) {
+		dev_err(dev, "Cannot enable SD clock.\n");
+		return ret;
+	}
+
+	ret = sdhci_runtime_resume_host(host);
+	if (ret)
+		goto out;
+
+	return 0;
+out:
+	clk_disable(pltfm_host->clk);
+	clk_disable(sdhci_arasan->clk_ahb);
+
+	return ret;
+}
+#endif /* ! CONFIG_PM */
 
 #ifdef CONFIG_PM_SLEEP
 /**
@@ -528,6 +576,9 @@ static int sdhci_arasan_suspend(struct device *dev)
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_arasan_data *sdhci_arasan = sdhci_pltfm_priv(pltfm_host);
 	int ret;
+
+	if (host->tuning_mode != SDHCI_TUNING_MODE_3)
+		mmc_retune_needed(host->mmc);
 
 	ret = sdhci_suspend_host(host);
 	if (ret)
@@ -589,8 +640,11 @@ static int sdhci_arasan_resume(struct device *dev)
 }
 #endif /* ! CONFIG_PM_SLEEP */
 
-static SIMPLE_DEV_PM_OPS(sdhci_arasan_dev_pm_ops, sdhci_arasan_suspend,
-			 sdhci_arasan_resume);
+static const struct dev_pm_ops sdhci_arasan_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(sdhci_arasan_suspend, sdhci_arasan_resume)
+	SET_RUNTIME_PM_OPS(sdhci_arasan_runtime_suspend,
+			   sdhci_arasan_runtime_resume, NULL)
+};
 
 static const struct of_device_id sdhci_arasan_of_match[] = {
 	/* SoC-specific compatible strings w/ soc_ctl_map */
@@ -799,6 +853,30 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	struct sdhci_pltfm_host *pltfm_host;
 	struct sdhci_arasan_data *sdhci_arasan;
 	struct device_node *np = pdev->dev.of_node;
+	unsigned int host_quirks2 = 0;
+
+	if (of_device_is_compatible(pdev->dev.of_node, "xlnx,zynqmp-8.9a")) {
+		char *soc_rev;
+
+		/* read Silicon version using nvmem driver */
+		soc_rev = zynqmp_nvmem_get_silicon_version(&pdev->dev,
+							   "soc_revision");
+		if (PTR_ERR(soc_rev) == -EPROBE_DEFER)
+			/* Do a deferred probe */
+			return -EPROBE_DEFER;
+		else if (IS_ERR(soc_rev))
+			dev_dbg(&pdev->dev, "Error getting silicon version\n");
+
+		/* Set host quirk if the silicon version is v1.0 */
+		if (!IS_ERR(soc_rev) && (*soc_rev == ZYNQMP_SILICON_V1))
+			host_quirks2 |= SDHCI_QUIRK2_NO_1_8_V;
+
+		/* Clean soc_rev if got a valid pointer from nvmem driver
+		 * else we may end up in kernel panic
+		 */
+		if (!IS_ERR(soc_rev))
+			kfree(soc_rev);
+	}
 
 	host = sdhci_pltfm_init(pdev, &sdhci_arasan_pdata,
 				sizeof(*sdhci_arasan));
@@ -811,6 +889,8 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 
 	match = of_match_node(sdhci_arasan_of_match, pdev->dev.of_node);
 	sdhci_arasan->soc_ctl_map = match->data;
+
+	host->quirks2 |= host_quirks2;
 
 	node = of_parse_phandle(pdev->dev.of_node, "arasan,soc-ctl-syscon", 0);
 	if (node) {
@@ -871,7 +951,7 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 
 	ret = mmc_of_parse(host->mmc);
 	if (ret) {
-		dev_err(&pdev->dev, "parsing dt failed (%u)\n", ret);
+		dev_err(&pdev->dev, "parsing dt failed (%d)\n", ret);
 		goto unreg_clk;
 	}
 
@@ -880,8 +960,6 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 					"arasan,sdhci-8.9a")) {
 		host->quirks |= SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12;
 		host->quirks2 |= SDHCI_QUIRK2_CLOCK_STANDARD_25_BROKEN;
-		if (of_get_property(pdev->dev.of_node, "broken-adma2", NULL))
-			host->quirks |= SDHCI_QUIRK_BROKEN_ADMA;
 		if (of_device_is_compatible(pdev->dev.of_node,
 					    "xlnx,zynqmp-8.9a")) {
 			ret = of_property_read_u32(pdev->dev.of_node,
@@ -945,6 +1023,13 @@ static int sdhci_arasan_probe(struct platform_device *pdev)
 	ret = sdhci_add_host(host);
 	if (ret)
 		goto err_add_host;
+
+	pm_runtime_set_active(&pdev->dev);
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_set_autosuspend_delay(&pdev->dev, 2000);
+	pm_runtime_mark_last_busy(&pdev->dev);
+	pm_runtime_use_autosuspend(&pdev->dev);
+	pm_runtime_forbid(&pdev->dev);
 
 	return 0;
 

@@ -39,6 +39,13 @@ config XILINX_AXI_EMAC_HWTSTAMP
 	---help---
 	  Generate hardare packet timestamps. This is to facilitate IEE 1588.
 
+config  AXIENET_HAS_MCDMA
+	bool "AxiEthernet is configured with MCDMA"
+	depends on XILINX_AXI_EMAC
+	default n
+	---help---
+	  When hardware is generated with Axi Ethernet with MCDMA select this option.
+
 config XILINX_LL_TEMAC
 	tristate "Xilinx LL TEMAC (LocalLink Tri-mode Ethernet MAC) driver"
 	depends on (PPC || MICROBLAZE)
@@ -46,21 +53,6 @@ config XILINX_LL_TEMAC
 	---help---
 	  This driver supports the Xilinx 10/100/1000 LocalLink TEMAC
 	  core used in Xilinx Spartan and Virtex FPGAs
-
-config XILINX_PS_EMAC
-	tristate "Xilinx Zynq tri-speed EMAC support"
-	depends on ARCH_ZYNQ
-	select PHYLIB
-	---help---
-	  This driver supports tri-speed EMAC.
-
-config XILINX_PS_EMAC_HWTSTAMP
-	bool "Generate hardware packet timestamps"
-	depends on XILINX_PS_EMAC
-	select PTP_1588_CLOCK
-	default n
-	---help---
-	  Generate hardare packet timestamps. This is to facilitate IEE 1588.
 
 config XILINX_TSN
 	bool "Enable Xilinx's TSN IP"
@@ -105,5 +97,12 @@ config XILINX_TSN_CB
 	default y
 	---help---
 	  Enable TSN CB protocol support.
+
+config XILINX_TSN_QBR
+       bool "Support QBR protocol in TSN"
+       depends on XILINX_TSN_SWITCH
+       default y
+       ---help---
+         Enable TSN QBR protocol support.
 
 endif # NET_VENDOR_XILINX

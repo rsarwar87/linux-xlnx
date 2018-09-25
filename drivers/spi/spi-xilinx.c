@@ -88,6 +88,7 @@
  * @axi_clk:		Pointer to the AXI clock
  * @axi4_clk:		Pointer to the AXI4 clock
  * @spi_clk:		Pointer to the SPI clock
+ * @dev:		Pointer to the device
  * @rx_ptr:		Pointer to the RX buffer
  * @tx_ptr:		Pointer to the TX buffer
  * @bytes_per_word:	Number of bytes in a word
@@ -107,13 +108,14 @@ struct xilinx_spi {
 	struct clk *axi_clk;
 	struct clk *axi4_clk;
 	struct clk *spi_clk;
+	struct device *dev;
 	u8 *rx_ptr;
 	const u8 *tx_ptr;
 	u8 bytes_per_word;
 	int buffer_size;
 	u32 cs_inactive;
-	unsigned int (*read_fn)(void __iomem *);
-	void (*write_fn)(u32, void __iomem *);
+	unsigned int (*read_fn)(void __iomem *addr);
+	void (*write_fn)(u32, void __iomem *addr);
 	u32 bytes_to_transfer;
 	u32 bytes_to_receive;
 	u32 rx_bus_width;
@@ -256,7 +258,8 @@ static void xspi_init_hw(struct xilinx_spi *xspi)
 	xspi->write_fn(0xffff, regs_base + XSPI_SSR_OFFSET);
 	/*
 	 * Disable the transmitter, enable Manual Slave Select Assertion,
-	 * put SPI controller into master mode, and enable it */
+	 * put SPI controller into master mode, and enable it
+	 */
 	xspi->write_fn(XSPI_CR_MANUAL_SSELECT |	XSPI_CR_MASTER_MODE |
 		XSPI_CR_ENABLE | XSPI_CR_TXFIFO_RESET |	XSPI_CR_RXFIFO_RESET,
 		regs_base + XSPI_CR_OFFSET);
@@ -375,16 +378,17 @@ static int xspi_setup_transfer(struct spi_device *qspi,
 static int xspi_setup(struct spi_device *qspi)
 {
 	int ret;
+	struct xilinx_spi *xqspi = spi_master_get_devdata(qspi->master);
 
 	if (qspi->master->busy)
 		return -EBUSY;
 
-	ret = pm_runtime_get_sync(&qspi->dev);
+	ret = pm_runtime_get_sync(xqspi->dev);
 	if (ret < 0)
 		return ret;
 
 	ret = xspi_setup_transfer(qspi, NULL);
-	pm_runtime_put_sync(&qspi->dev);
+	pm_runtime_put_sync(xqspi->dev);
 
 	return ret;
 }
@@ -452,10 +456,11 @@ static int xspi_start_transfer(struct spi_master *master,
 static int xspi_prepare_transfer_hardware(struct spi_master *master)
 {
 	struct xilinx_spi *xqspi = spi_master_get_devdata(master);
+
 	u32 cr;
 	int ret;
 
-	ret = pm_runtime_get_sync(&master->dev);
+	ret = pm_runtime_get_sync(xqspi->dev);
 	if (ret < 0)
 		return ret;
 
@@ -484,7 +489,7 @@ static int xspi_unprepare_transfer_hardware(struct spi_master *master)
 	cr &= ~XSPI_CR_ENABLE;
 	xqspi->write_fn(cr, xqspi->regs + XSPI_CR_OFFSET);
 
-	pm_runtime_put_sync(&master->dev);
+	pm_runtime_put_sync(xqspi->dev);
 
 	return 0;
 }
@@ -625,14 +630,12 @@ static const struct dev_pm_ops xilinx_spi_dev_pm_ops = {
 static int xilinx_spi_probe(struct platform_device *pdev)
 {
 	struct xilinx_spi *xspi;
-	struct xspi_platform_data *pdata;
 	struct resource *res;
 	int ret, num_cs = 0, bits_per_word = 8;
 	struct spi_master *master;
 	struct device_node *nc;
 	u32 tmp, rx_bus_width, fifo_size;
 
-	pdata = dev_get_platdata(&pdev->dev);
 	of_property_read_u32(pdev->dev.of_node, "num-cs",
 				&num_cs);
 	if (!num_cs)
@@ -743,6 +746,8 @@ static int xilinx_spi_probe(struct platform_device *pdev)
 	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0)
 		goto clk_unprepare_all;
+
+	xspi->dev = &pdev->dev;
 
 	xspi->read_fn = xspi_read32;
 	xspi->write_fn = xspi_write32;
