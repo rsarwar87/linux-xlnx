@@ -93,12 +93,12 @@
 	phy-mode = "rgmii-id";
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_gem2_default>;
-	phy0: phy@5 {
+	phy0: ethernet-phy@5 {
 		reg = <5>;
 		ti,rx-internal-delay = <0x8>;
 		ti,tx-internal-delay = <0xa>;
 		ti,fifo-depth = <0x1>;
-		ti,rxctrl-strap-worka;
+		ti,dp83867-rxctrl-strap-quirk;
 	};
 };
 
@@ -486,7 +486,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_spi0_default>;
 
-	spi0_flash0: flash0@0 {
+	spi0_flash0: flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "sst,sst25wf080", "jedec,spi-nor";
@@ -506,7 +506,7 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_spi1_default>;
 
-	spi1_flash0: flash0@0 {
+	spi1_flash0: flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		compatible = "atmel,at45db041e", "atmel,at45", "atmel,dataflash";
