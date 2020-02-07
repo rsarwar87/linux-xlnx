@@ -520,7 +520,6 @@ static void macb_handle_link_change(struct net_device *dev)
 static int macb_mii_probe(struct net_device *dev)
 {
 	struct macb *bp = netdev_priv(dev);
-	struct macb_platform_data *pdata;
 	struct phy_device *phydev;
 	struct device_node *np;
 	int phy_irq, ret, i;
@@ -2447,7 +2446,7 @@ static void macb_init_hw(struct macb *bp)
  * The unicast hash enable and the multicast hash enable bits in the
  * network configuration register enable the reception of hash matched
  * frames. The destination address is reduced to a 6 bit index into
- * the 64 bit hash register using the following hash function.  The
+ * the 64 bit hash register using the following hash function.	The
  * hash function is an exclusive or of every sixth bit of the
  * destination address.
  *
@@ -3279,8 +3278,8 @@ static const struct ethtool_ops macb_ethtool_ops = {
 	.get_regs		= macb_get_regs,
 	.get_link		= ethtool_op_get_link,
 	.get_ts_info		= ethtool_op_get_ts_info,
-	.get_link_ksettings     = phy_ethtool_get_link_ksettings,
-	.set_link_ksettings     = phy_ethtool_set_link_ksettings,
+	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
+	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
 	.get_ringparam		= macb_get_ringparam,
 	.set_ringparam		= macb_set_ringparam,
 };
@@ -3293,8 +3292,8 @@ static const struct ethtool_ops gem_ethtool_ops = {
 	.get_ethtool_stats	= gem_get_ethtool_stats,
 	.get_strings		= gem_get_ethtool_strings,
 	.get_sset_count		= gem_get_sset_count,
-	.get_link_ksettings     = phy_ethtool_get_link_ksettings,
-	.set_link_ksettings     = phy_ethtool_set_link_ksettings,
+	.get_link_ksettings	= phy_ethtool_get_link_ksettings,
+	.set_link_ksettings	= phy_ethtool_set_link_ksettings,
 	.get_ringparam		= macb_get_ringparam,
 	.set_ringparam		= macb_set_ringparam,
 	.get_rxnfc			= gem_get_rxnfc,
@@ -4176,7 +4175,6 @@ static int macb_probe(struct platform_device *pdev)
 	unsigned int queue_mask, num_queues;
 	struct macb_platform_data *pdata;
 	bool native_io;
-	struct phy_device *phydev;
 	struct net_device *dev;
 	struct resource *regs;
 	void __iomem *mem;
@@ -4185,7 +4183,7 @@ static int macb_probe(struct platform_device *pdev)
 	int err, val;
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	mem = devm_ioremap_resource(&pdev->dev, regs);
+	mem = devm_ioremap(&pdev->dev, regs->start, resource_size(regs));
 	if (IS_ERR(mem))
 		return PTR_ERR(mem);
 
@@ -4304,8 +4302,8 @@ static int macb_probe(struct platform_device *pdev)
 	}
 
 	/* Power up the PHY if there is a GPIO reset */
-	phy_node = of_parse_phandle(np, "phy-handle", 0);
-	if (!phy_node && of_phy_is_fixed_link(np)) {
+	bp->phy_node = of_parse_phandle(np, "phy-handle", 0);
+	if (!bp->phy_node && of_phy_is_fixed_link(np)) {
 		err = of_phy_register_fixed_link(np);
 		if (err < 0) {
 			dev_err(&pdev->dev, "broken fixed-link specification");
@@ -4337,9 +4335,16 @@ static int macb_probe(struct platform_device *pdev)
 		goto err_out_phy_put;
 	}
 
-	err = macb_mii_init(bp);
-	if (err)
-		goto err_out_unregister_netdev;
+
+	pdata = dev_get_platdata(&bp->pdev->dev);
+	if (pdata && gpio_is_valid(pdata->phy_irq_pin)) {
+		err = devm_gpio_request(&bp->pdev->dev, pdata->phy_irq_pin,
+							"phy int");
+		if (!err) {
+			phy_irq = gpio_to_irq(pdata->phy_irq_pin);
+			bp->phy_irq = (phy_irq < 0) ? PHY_POLL : phy_irq;
+		}
+	}
 
 	phydev = dev->phydev;
 
